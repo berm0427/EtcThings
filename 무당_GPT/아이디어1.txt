@@ -1,0 +1,290 @@
+무당 지피티
+1. 이름(한자), 생년월일(2002.04.27 형식) 받기 
+2. 프롬프트를 이용한 API이용
+  2.1. 무당 처럼 사주팔자 풀기(기본)
+  2.2. 고민 입력하면 상담 
+  2.3. API 가져오는 코드는 
+def analyze_with_claude(self, email_data, initial_analysis):
+        """Claude AI로 이메일 추가 분석"""
+        try:
+            if not AI_ENABLED or not ANTHROPIC_AVAILABLE or not ANTHROPIC_API_KEY:
+                logger.info("AI 분석이 비활성화되어 있거나 필요한 설정이 없습니다.")
+                return None
+            
+            # API 클라이언트 설정
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            
+            # 첨부 파일 정보 포맷팅
+            attachments_info = "없음"
+            if initial_analysis.get('attachments'):
+                attachments_info = "\n".join([
+                    f"- {att['filename']} ({self._format_file_size(att['size'])})"
+                    for att in initial_analysis['attachments']
+                ])
+            
+            # 위험 요소 포맷팅
+            risk_factors = "없음"
+            if initial_analysis.get('reasons'):
+                risk_factors = "\n".join([f"- {reason}" for reason in initial_analysis['reasons']])
+            
+            # 프롬프트 구성 (더 나은 프롬프트가 있으면 수정하셔도 됩니다)
+            prompt = f"""
+            당신은 이메일 보안 전문가입니다. 다음 이메일이 피싱, 스팸, 사기 또는 기타 악성 시도인지 분석해주세요.
+
+            ## 이메일 정보
+            제목: {email_data.get('subject', 'N/A')}
+            발신자: {email_data.get('from', 'N/A')}
+            발신 도메인: {initial_analysis['header'].get('sender_domain', 'N/A')}
+
+            ## 이메일 본문
+            {email_data.get('body', '')[:3000]}
+
+            ## 첨부 파일
+            {attachments_info}
+
+            ## 기본 분석 결과
+            위험도 점수: {initial_analysis['risk_score']}/100
+            도메인 평판: {initial_analysis['header'].get('domain_reputation', 'unknown')}
+            SPF 검증: {initial_analysis['header'].get('spf_check', 'unknown')}
+            DKIM 검증: {initial_analysis['header'].get('dkim_check', 'unknown')}
+            DMARC 검증: {initial_analysis['header'].get('dmarc_check', 'unknown')}
+            도메인 나이: {initial_analysis.get('domain_age_days', 'unknown')}일
+
+            ## 감지된 위험 요소
+            {risk_factors}
+
+            ## 중요 고려사항
+            - 도메인이 .go.kr, .or.kr, .kr 등 한국 공식 기관 도메인이고, 등록된 지 1년 이상이면 높은 신뢰성을 가진 것으로 간주하세요.
+            - 한국의 많은 정상적인 기업이나 서비스에서는 DKIM이나 DMARC가 구현되지 않은 경우가 흔합니다. SPF만 통과해도 기본적인 인증은 충족된 것으로 볼 수 있습니다.
+            - 로그인 알림, 비밀번호 재설정, 계정 확인 등은 정상적인 서비스에서도 자주 보내는 메시지입니다.
+
+            ## 사칭 감지 및 우선순위 지정
+            - 공공 기관(경찰, 검찰, 법원, 국세청 등)을 사칭하면서 개인 이메일 서비스(gmail.com, kakao.com, naver.com 등)를 사용하는 경우, 다른 모든 요소보다 이것을 최우선 위험 신호로 간주하세요.
+            - 이런 경우 도메인 신뢰성이나 SPF/DKIM 인증 통과 여부와 상관없이 위험도는 최소 80점 이상이어야 합니다.
+            - 발신 도메인이 오래되었고 인증(SPF/DKIM)에 통과했더라도, 내용상 명백한 사칭이 있다면 이러한 긍정적 요소들이 위험도를 낮추는 데 영향을 미치지 않아야 합니다.
+            - 사칭 행위는 어떤 기술적 인증보다 항상 우선시되어야 합니다.
+
+            ## 이메일 평가 방법
+            - 도메인 신뢰성: 오래된 도메인(.kr, .com 등)이 최근 생성된 도메인보다 신뢰성이 높습니다.
+            - 이메일 인증: 한국 서비스의 경우 SPF 통과만으로도 기본적인 발신자 검증은 된 것으로 볼 수 있습니다.
+            - 본문 내용: 급한 행동 촉구, 비정상적인 개인정보 요구, 문법/맞춤법 오류가 많은지 확인하세요.
+            - 링크 및 첨부 파일: 이메일의 목적과 일치하는지 확인하세요.
+
+            ## 분석 가이드라인
+            - 위험도 평가는 도메인 신뢰성(40%) > 본문 내용과 요구하는 행동(30%) > 헤더 인증(20%) > 기타 요소(10%) 순으로 가중치를 두세요.
+            - 오래된 도메인에서 발송되고 SPF가 통과한 이메일은 DKIM이나 DMARC가 실패하더라도 크게 의심하지 마세요.
+            - 특히 한국 서비스/기업의 경우 DKIM/DMARC 실패만으로 위험도를 크게 높이지 마세요.
+
+            ## 분석 질문
+            1. 이 이메일은 악성일 가능성이 얼마나 됩니까? (0-100점)
+            2. 가장 의심스러운 요소는 무엇입니까?
+            3. 발신자가 자신을 위장하고 있는 징후가 있습니까?
+            4. 이메일 본문에서 심리적 조작 전술이 사용되고 있습니까?
+            5. 이메일이 수신자에게 어떤 행동을 유도하려고 합니까?
+            6. 보안 관점에서 이메일에 대한 최종 평가는 무엇입니까?
+
+            ## 추가 질문
+            1. 이 서비스/기업의 일반적인 커뮤니케이션 패턴과 일치하나요?
+            2. 도메인이 5년 이상 된 경우, DKIM/DMARC 실패가 위험도에 얼마나 영향을 미쳐야 하나요?
+            3. 이메일에서 요구하는 행동이 해당 서비스의 일반적인 프로세스와 일치하나요?
+
+            JSON 형식으로 응답해주세요. 다음과 같은 필드를 포함해야 합니다:
+            - risk_score: 0-100 사이의 숫자 (한국 서비스의 경우 DKIM/DMARC 실패만으로는 점수를 20점 이상 올리지 마세요)
+            - verdict: "안전", "의심", "위험" 중 하나
+            - suspicious_elements: 의심스러운 요소 목록
+            - explanation: 이메일이 악성인 이유 또는 안전한 이유에 대한 설명
+            - recommendation: 사용자에게 제안하는 행동 지침
+            """
+            
+            logger.info("Claude API에 분석 요청 중...")
+            
+            # Claude API 호출
+            response = client.messages.create(
+                model=AI_MODEL,
+                max_tokens=2000,
+                temperature=0.0,
+                system="당신은 이메일 보안 분석 전문가로, JSON 형식으로 명확한 분석 결과를 제공합니다.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            # 응답 객체 디버깅
+            logger.info(f"응답 객체 타입: {type(response)}")
+            logger.info(f"응답 객체 속성: {dir(response)}")
+            
+            # JSON 응답 추출 및 파싱
+            ai_result = None
+            error_msg = ""
+            
+            try:
+                content = ""
+                
+                # 응답의 content 직접 확인 (새 API 버전)
+                if hasattr(response, 'content'):
+                    logger.info(f"response.content 타입: {type(response.content)}")
+                    
+                    # 문자열인 경우
+                    if isinstance(response.content, str):
+                        content = response.content
+                        logger.info(f"문자열 content 길이: {len(content)}")
+                    # 리스트인 경우
+                    elif isinstance(response.content, list):
+                        logger.info(f"리스트 content 길이: {len(response.content)}")
+                        for i, item in enumerate(response.content):
+                            logger.info(f"항목 {i} 타입: {type(item)}")
+                            
+                            # TextBlock 객체 처리
+                            if hasattr(item, 'text'):
+                                content = item.text
+                                logger.info(f"TextBlock에서 텍스트 추출 성공, 길이: {len(content)}")
+                                break
+                            # 딕셔너리 처리
+                            elif isinstance(item, dict):
+                                logger.info(f"항목 {i} 키: {item.keys()}")
+                                if 'text' in item:
+                                    content = item['text']
+                                    logger.info(f"딕셔너리에서 텍스트 추출 성공, 길이: {len(content)}")
+                                    break
+                                elif 'type' in item and item['type'] == 'text':
+                                    content = item.get('value', '')
+                                    logger.info(f"텍스트 타입 항목에서 추출 성공, 길이: {len(content)}")
+                                    break
+                        
+                        if not content:
+                            # 모델 타입 객체를 직접 변환하려고 시도
+                            try:
+                                if hasattr(response.content[0], 'model_dump'):
+                                    dump = response.content[0].model_dump()
+                                    if 'text' in dump:
+                                        content = dump['text']
+                                        logger.info(f"모델 덤프에서 텍스트 추출 성공, 길이: {len(content)}")
+                            except Exception as e:
+                                logger.warning(f"모델 덤프 추출 실패: {str(e)}")
+                                
+                            if not content:
+                                content = str(response.content)
+                                logger.info("리스트에서 텍스트 추출 실패, 전체 변환")
+                    else:
+                        content = str(response.content)
+                        logger.info(f"기타 타입 content를 문자열로 변환, 길이: {len(content)}")
+                
+                # 응답 객체 직접 변환 시도
+                elif hasattr(response, 'model_dump'):
+                    try:
+                        dump = response.model_dump()
+                        logger.info(f"model_dump 결과: {dump.keys() if isinstance(dump, dict) else 'Not a dict'}")
+                        
+                        if isinstance(dump, dict) and 'content' in dump:
+                            content_data = dump['content']
+                            
+                            if isinstance(content_data, list):
+                                for item in content_data:
+                                    if isinstance(item, dict):
+                                        if 'text' in item:
+                                            content = item['text']
+                                            logger.info(f"model_dump 리스트에서 텍스트 추출, 길이: {len(content)}")
+                                            break
+                            elif isinstance(content_data, str):
+                                content = content_data
+                                logger.info(f"model_dump에서 문자열 추출, 길이: {len(content)}")
+                    except Exception as e:
+                        logger.warning(f"model_dump 처리 오류: {str(e)}")
+                
+                # 마지막 수단으로 응답 객체를 문자열로 변환
+                if not content:
+                    try:
+                        content = str(response)
+                        logger.info(f"응답 객체를 문자열로 변환, 길이: {len(content)}")
+                    except:
+                        content = ""
+                        logger.warning("응답 객체를 문자열로 변환 실패")
+                        
+                # 내용에서 JSON 찾기
+                if content:
+                    # 코드 블록에서 JSON 찾기
+                    json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', content, re.DOTALL)
+                    if json_match:
+                        json_text = json_match.group(1).strip()
+                        try:
+                            ai_result = json.loads(json_text)
+                            logger.info("JSON 코드 블록에서 결과 추출 성공")
+                        except json.JSONDecodeError as e:
+                            error_msg = f"JSON 블록 파싱 오류: {str(e)}"
+                            logger.warning(error_msg)
+                    
+                    # 직접 JSON 객체 찾기
+                    if not ai_result:
+                        json_match = re.search(r'({[\s\S]*?})', content, re.DOTALL)
+                        if json_match:
+                            json_text = json_match.group(1).strip()
+                            try:
+                                ai_result = json.loads(json_text)
+                                logger.info("일반 텍스트에서 JSON 객체 추출 성공")
+                            except json.JSONDecodeError:
+                                # 더 관대한 방식으로 다시 시도
+                                try:
+                                    # 키를 따옴표로 감싸기
+                                    fixed_json = re.sub(r'(\w+):', r'"\1":', json_text)
+                                    ai_result = json.loads(fixed_json)
+                                    logger.info("수정된 JSON 추출 성공")
+                                except json.JSONDecodeError as e:
+                                    error_msg = f"JSON 파싱 오류: {str(e)}"
+                                    logger.warning(error_msg)
+                else:
+                    logger.warning("응답에서 내용을 추출할 수 없습니다")
+                    error_msg = "응답에서 내용을 추출할 수 없습니다"
+            
+            except Exception as e:
+                error_msg = f"응답 처리 중 오류: {str(e)}"
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+            
+            # AI 결과가 없는 경우 기본 실패 메시지 제공
+            if not ai_result:
+                logger.warning(f"AI 응답 처리 실패: {error_msg}")
+                
+                # 간단한 실패 메시지 제공
+                ai_result = {
+                    "risk_score": 0,
+                    "verdict": "분석 실패",
+                    "suspicious_elements": [],
+                    "explanation": f"AI 분석 중 오류가 발생했습니다: {error_msg}",
+                    "recommendation": "기본 분석 결과를 참고하세요."
+                }
+            
+            # AI 분석 결과 저장
+            result_path = self.result_dir / "ai_analysis_result.json"
+            with open(result_path, 'w', encoding='utf-8') as f:
+                json.dump(ai_result, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"AI 분석 완료: 위험도 {ai_result.get('risk_score')}/100, 판정: {ai_result.get('verdict')}")
+            
+            return ai_result
+            
+        except Exception as e:
+            logger.error(f"Claude API 분석 중 오류 발생: {e}")
+            logger.error(traceback.format_exc())
+            return {
+                "risk_score": 0,
+                "verdict": "분석 실패",
+                "suspicious_elements": [],
+                "explanation": f"AI 분석 중 오류 발생: {str(e)}",
+                "recommendation": "기본 분석 결과를 참고하세요."
+            }
+이건 결과를 요청하는 함수(참고용)    
+
+
+# AI 분석 수행 (기본 분석 후)
+            if AI_ENABLED and ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY:
+                email_data = {
+                    'subject': parsed_data.get('subject', ''),
+                    'from': parsed_data['msg'].get('From', ''),
+                    'body': text_body
+                }
+                
+                ai_result = self.analyze_with_claude(email_data, result)
+                if ai_result:
+                    # AI 분석 결과 추가
+                    result['ai_analysis'] = ai_result
+이건 결과 받아오는 형식 (참조용)
+
+3. GUI (PyQt5 이용)
